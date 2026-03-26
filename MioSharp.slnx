@@ -1,0 +1,21 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/HelloWorld/HelloWorld.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Mio.App/Mio.App.csproj" />
+    <Project Path="src/Mio.Core/Mio.Core.csproj" />
+    <Project Path="src/Mio.Css/Mio.Css.csproj" />
+    <Project Path="src/Mio.Html/Mio.Html.csproj" />
+    <Project Path="src/Mio.Layout/Mio.Layout.csproj" />
+    <Project Path="src/Mio.Platform/Mio.Platform.csproj" />
+    <Project Path="src/Mio.Rendering/Mio.Rendering.csproj" />
+    <Project Path="src/Mio.Routing/Mio.Routing.csproj" />
+    <Project Path="src/Mio.Script/Mio.Script.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Mio.Html.Tests/Mio.Html.Tests.csproj" />
+    <Project Path="tests/Mio.Layout.Tests/Mio.Layout.Tests.csproj" />
+    <Project Path="tests/Mio.Script.Tests/Mio.Script.Tests.csproj" />
+  </Folder>
+</Solution>
