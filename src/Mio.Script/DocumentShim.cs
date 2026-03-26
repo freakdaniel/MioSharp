@@ -7,6 +7,8 @@ namespace Mio.Script;
 /// <summary>
 /// Exposes an AngleSharp IDocument to Jint as a JS document object.
 /// Implements the minimal DOM API required by React/Vue.
+/// Properties use lowercase C# names so Jint 4.x reflection finds them
+/// as exact matches for JS property access (e.g. el.textContent).
 /// </summary>
 public sealed class DocumentShim
 {
@@ -19,6 +21,15 @@ public sealed class DocumentShim
     {
         _doc = doc;
         _engine = engine;
+    }
+
+    // Properties (lowercase to match JS names exactly)
+    public ElementShim? body => _doc.Body != null ? Wrap(_doc.Body) : null;
+    public ElementShim? documentElement => _doc.DocumentElement != null ? Wrap(_doc.DocumentElement) : null;
+    public string title
+    {
+        get => _doc.Title ?? "";
+        set => _doc.Title = value;
     }
 
     public ElementShim? getElementById(string id)
@@ -58,11 +69,6 @@ public sealed class DocumentShim
         return Wrap(el);
     }
 
-    public ElementShim? get_body() => _doc.Body != null ? Wrap(_doc.Body) : null;
-    public ElementShim? get_documentElement() => _doc.DocumentElement != null ? Wrap(_doc.DocumentElement) : null;
-    public string get_title() => _doc.Title ?? "";
-    public void set_title(string v) { _doc.Title = v; }
-
     internal ElementShim Wrap(IElement el) => new(el, this, _engine);
     internal void NotifyMutation() => DomMutated?.Invoke();
 }
@@ -84,31 +90,86 @@ public sealed class ElementShim
         _engine = engine;
     }
 
-    // Properties
-    public string get_tagName() => _el.TagName.ToLowerInvariant();
-    public string get_id() => _el.Id ?? "";
-    public void set_id(string v) { _el.Id = v; _doc.NotifyMutation(); }
-    public string get_className() => _el.ClassName ?? "";
-    public void set_className(string v) { _el.ClassName = v; _doc.NotifyMutation(); }
-    public string? get_innerHTML() => _el.InnerHtml;
-    public void set_innerHTML(string v) { _el.InnerHtml = v; _doc.NotifyMutation(); }
-    public string? get_textContent() => _el.TextContent;
-    public void set_textContent(string v) { _el.TextContent = v; _doc.NotifyMutation(); }
-    public string? get_innerText() => _el.TextContent;
-    public void set_innerText(string v) { _el.TextContent = v; _doc.NotifyMutation(); }
-    public string? get_value() => _el.GetAttribute("value") ?? "";
-    public void set_value(string v) { _el.SetAttribute("value", v); _doc.NotifyMutation(); }
+    public string tagName => _el.TagName.ToLowerInvariant();
+    public string nodeName => _el.TagName.ToLowerInvariant();
 
-    // Style proxy
-    public StyleProxy get_style() => new(_el, _doc);
+    public string id
+    {
+        get => _el.Id ?? "";
+        set { _el.Id = value; _doc.NotifyMutation(); }
+    }
 
-    // Attributes
+    public string className
+    {
+        get => _el.ClassName ?? "";
+        set { _el.ClassName = value; _doc.NotifyMutation(); }
+    }
+
+    public string? innerHTML
+    {
+        get => _el.InnerHtml;
+        set { _el.InnerHtml = value ?? ""; _doc.NotifyMutation(); }
+    }
+
+    public string? textContent
+    {
+        get => _el.TextContent;
+        set { _el.TextContent = value ?? ""; _doc.NotifyMutation(); }
+    }
+
+    public string? innerText
+    {
+        get => _el.TextContent;
+        set { _el.TextContent = value ?? ""; _doc.NotifyMutation(); }
+    }
+
+    public string? value
+    {
+        get => _el.GetAttribute("value") ?? "";
+        set { _el.SetAttribute("value", value ?? ""); _doc.NotifyMutation(); }
+    }
+
+    public StyleProxy style => new(_el, _doc);
+
+    public ElementShim? parentElement
+    {
+        get
+        {
+            var p = _el.ParentElement;
+            return p != null ? new ElementShim(p, _doc, _engine) : null;
+        }
+    }
+
+    public ElementShim? firstChild =>
+        _el.FirstElementChild != null ? new(_el.FirstElementChild, _doc, _engine) : null;
+
+    public ElementShim? nextSibling
+    {
+        get
+        {
+            var ns = _el.NextElementSibling;
+            return ns != null ? new(ns, _doc, _engine) : null;
+        }
+    }
+
+    public JsValue children
+    {
+        get
+        {
+            var arr = _el.Children.Select(c => JsValue.FromObject(_engine, new ElementShim(c, _doc, _engine))).ToArray();
+            return _engine.Evaluate("[]"); // simplified
+        }
+    }
+
+    public bool isConnected => _el.ParentElement != null;
+
+    public ClassListShim classList => new(_el, _doc);
+
     public string? getAttribute(string name) => _el.GetAttribute(name);
     public void setAttribute(string name, string value) { _el.SetAttribute(name, value); _doc.NotifyMutation(); }
     public bool hasAttribute(string name) => _el.HasAttribute(name);
     public void removeAttribute(string name) { _el.RemoveAttribute(name); _doc.NotifyMutation(); }
 
-    // DOM tree
     public ElementShim appendChild(ElementShim child)
     {
         _el.AppendChild(child._el);
@@ -138,30 +199,6 @@ public sealed class ElementShim
         _doc.NotifyMutation();
     }
 
-    public ElementShim? get_parentElement()
-    {
-        var p = _el.ParentElement;
-        return p != null ? new ElementShim(p, _doc, _engine) : null;
-    }
-
-    public ElementShim? get_firstChild() =>
-        _el.FirstElementChild != null ? new(_el.FirstElementChild, _doc, _engine) : null;
-
-    public ElementShim? get_nextSibling()
-    {
-        var ns = _el.NextElementSibling;
-        return ns != null ? new(ns, _doc, _engine) : null;
-    }
-
-    public JsValue get_children()
-    {
-        var arr = _el.Children.Select(c => JsValue.FromObject(_engine, new ElementShim(c, _doc, _engine))).ToArray();
-        return _engine.Evaluate($"[]"); // simplified
-    }
-
-    public bool get_isConnected() => _el.ParentElement != null;
-
-    // Events
     public void addEventListener(string type, JsValue handler)
     {
         if (!_listeners.TryGetValue(type, out var list))
@@ -193,14 +230,9 @@ public sealed class ElementShim
         }
     }
 
-    // Class list
-    public ClassListShim get_classList() => new(_el, _doc);
-
-    // Geometry (approximate)
     public JsValue getBoundingClientRect() =>
         _engine.Evaluate("({ left:0, top:0, right:0, bottom:0, width:0, height:0 })");
 
-    // Query
     public ElementShim? querySelector(string selector)
     {
         try { var el = _el.QuerySelector(selector); return el != null ? new(el, _doc, _engine) : null; }

@@ -98,7 +98,7 @@ public sealed class LayoutEngine
 
         float x = containing.X + box.Style.Margin.Left + box.Style.BorderWidth.Left + box.Style.Padding.Left;
         float y = containing.Y + box.Style.Margin.Top + box.Style.BorderWidth.Top + box.Style.Padding.Top;
-        float innerW = width - box.Style.Padding.Horizontal - box.Style.BorderWidth.Horizontal;
+        float innerW = width; // width is already the content-box width (padding+border already subtracted)
 
         box.ContentRect = new Rect(x, y, innerW, 0);
 
@@ -114,9 +114,10 @@ public sealed class LayoutEngine
             foreach (var inl in inlineRun)
             {
                 // Approximate inline width by text length * fontsize * 0.55
-                float inlW = inl.IsTextBox
-                    ? Math.Min(inl.TextContent!.Length * inl.Style.FontSize * 0.55f, innerW)
+                float naturalW = inl.IsTextBox
+                    ? inl.TextContent!.Length * inl.Style.FontSize * 0.55f
                     : (inl.Style.Width ?? innerW);
+                float inlW = innerW < 99_000f ? Math.Min(naturalW, innerW) : naturalW;
                 inl.ContentRect = new Rect(curX, cursorY, inlW, lineH);
                 curX += inlW;
             }
@@ -143,6 +144,20 @@ public sealed class LayoutEngine
         }
         FlushInlineRun();
 
+        // Shrink-to-fit: when no explicit width and containing block is unconstrained,
+        // tighten content width to actual child extent (needed for flex row items)
+        if (!box.Style.Width.HasValue && containing.Width >= 99_000f)
+        {
+            float maxRight = 0;
+            foreach (var c in box.Children)
+                maxRight = Math.Max(maxRight, c.ContentRect.Right - x);
+            if (maxRight > 0)
+            {
+                innerW = maxRight;
+                box.ContentRect = box.ContentRect with { Width = innerW };
+            }
+        }
+
         float height = box.Style.Height ?? (cursorY - y);
         if (box.Style.MaxHeight.HasValue) height = Math.Min(height, box.Style.MaxHeight.Value);
         if (box.Style.MinHeight.HasValue) height = Math.Max(height, box.Style.MinHeight.Value);
@@ -166,20 +181,18 @@ public sealed class LayoutEngine
         var children = box.Children.Where(c => c.Style.Display != Display.None).ToList();
         if (children.Count == 0) return;
 
-        // First pass: measure intrinsic sizes using unconstrained space
         const float Unconstrained = 100_000f;
         float totalFixed = 0, totalGrow = 0;
         foreach (var child in children)
         {
-            // For column: give full width but unconstrained height so BlockLayout can measure true content height
-            // For row: give unconstrained width but full height
             var intrinsic = new Rect(x, y,
                 isRow ? (child.Style.Width ?? Unconstrained) : innerW,
                 isRow ? innerH : (child.Style.Height ?? Unconstrained));
             PerformLayout(child, intrinsic);
+
             totalFixed += isRow
-                ? child.ContentRect.Width  + child.Style.Margin.Horizontal
-                : child.ContentRect.Height + child.Style.Margin.Vertical;
+                ? child.MarginRect.Width  - child.Style.Margin.Horizontal
+                : child.MarginRect.Height - child.Style.Margin.Vertical;
             totalGrow += child.Style.FlexGrow;
         }
 
@@ -187,7 +200,6 @@ public sealed class LayoutEngine
         float freeSpace = (isRow ? innerW : innerH) - totalFixed - totalGapSpace;
         if (freeSpace < 0) freeSpace = 0;
 
-        // JustifyContent offset
         float offset = 0, spaceBetween = 0, spaceAround = 0;
         switch (box.Style.JustifyContent)
         {
@@ -198,37 +210,75 @@ public sealed class LayoutEngine
             case JustifyContent.SpaceEvenly: spaceAround = freeSpace / (children.Count + 1); offset = spaceAround; break;
         }
 
-        // Second pass: position children
         float cursor = isRow ? (x + offset) : (y + offset);
         foreach (var child in children)
         {
-            float mainSize = isRow ? child.ContentRect.Width : child.ContentRect.Height;
+            float mainBorder = isRow
+                ? child.MarginRect.Width  - child.Style.Margin.Horizontal
+                : child.MarginRect.Height - child.Style.Margin.Vertical;
             if (child.Style.FlexGrow > 0 && totalGrow > 0)
-                mainSize += freeSpace * (child.Style.FlexGrow / totalGrow);
+                mainBorder += freeSpace * (child.Style.FlexGrow / totalGrow);
 
-            float crossPos = isRow
-                ? AlignCross(y, innerH, child.ContentRect.Height + child.Style.Margin.Vertical, box.Style.AlignItems)
-                : AlignCross(x, innerW, child.ContentRect.Width + child.Style.Margin.Horizontal, box.Style.AlignItems);
+            float crossBorder = isRow
+                ? child.MarginRect.Height - child.Style.Margin.Vertical
+                : child.MarginRect.Width  - child.Style.Margin.Horizontal;
 
-            var childRect = isRow
-                ? new Rect(cursor + child.Style.Margin.Left, crossPos + child.Style.Margin.Top, mainSize, child.ContentRect.Height)
-                : new Rect(crossPos + child.Style.Margin.Left, cursor + child.Style.Margin.Top, child.ContentRect.Width, mainSize);
+            bool crossUnconstrained = isRow ? innerH >= 99_000f : innerW >= 99_000f;
+            if (box.Style.AlignItems == AlignItems.Stretch && !crossUnconstrained)
+            {
+                if (isRow && !child.Style.Height.HasValue)
+                    crossBorder = Math.Max(0, innerH - child.Style.Margin.Vertical);
+                else if (!isRow && !child.Style.Width.HasValue)
+                    crossBorder = Math.Max(0, innerW - child.Style.Margin.Horizontal);
+            }
 
-            child.ContentRect = childRect;
+            float crossInner = isRow ? innerH : innerW;
+            float crossStart = isRow ? y : x;
+            float crossMarginSize = crossBorder + (isRow ? child.Style.Margin.Vertical : child.Style.Margin.Horizontal);
+            float crossBorderStart = AlignCross(crossStart, crossInner, crossMarginSize, box.Style.AlignItems)
+                                   + (isRow ? child.Style.Margin.Top : child.Style.Margin.Left);
 
-            // Re-layout child with final size so its children get correct positions
-            PerformLayout(child, new Rect(childRect.X - child.Style.Padding.Left, childRect.Y - child.Style.Padding.Top,
-                childRect.Width + child.Style.Padding.Horizontal, childRect.Height + child.Style.Padding.Vertical));
+            float mainBorderStart = cursor + (isRow ? child.Style.Margin.Left : child.Style.Margin.Top);
 
-            cursor += (isRow ? mainSize + child.Style.Margin.Horizontal : mainSize + child.Style.Margin.Vertical)
-                     + gap + spaceBetween + spaceAround;
+            float pl = child.Style.Padding.Left,  pr = child.Style.Padding.Right;
+            float pt = child.Style.Padding.Top,   pb = child.Style.Padding.Bottom;
+            float bl = child.Style.BorderWidth.Left, br = child.Style.BorderWidth.Right;
+            float bt = child.Style.BorderWidth.Top,  bb = child.Style.BorderWidth.Bottom;
+
+            float contentX, contentY, contentW, contentH;
+            if (isRow)
+            {
+                contentX = mainBorderStart + bl + pl;
+                contentY = crossBorderStart + bt + pt;
+                contentW = Math.Max(0, mainBorder  - (bl + br + pl + pr));
+                contentH = Math.Max(0, crossBorder - (bt + bb + pt + pb));
+            }
+            else
+            {
+                contentX = crossBorderStart + bl + pl;
+                contentY = mainBorderStart  + bt + pt;
+                contentW = Math.Max(0, crossBorder - (bl + br + pl + pr));
+                contentH = Math.Max(0, mainBorder  - (bt + bb + pt + pb));
+            }
+
+            child.ContentRect = new Rect(contentX, contentY, contentW, contentH);
+
+            PerformLayout(child, new Rect(
+                contentX - child.Style.Margin.Left - bl - pl,
+                contentY - child.Style.Margin.Top  - bt - pt,
+                Math.Max(0, contentW + child.Style.Margin.Horizontal + bl + br + pl + pr),
+                Math.Max(0, contentH + child.Style.Margin.Vertical   + bt + bb + pt + pb)));
+
+            float itemMainTotal = (isRow ? child.Style.Margin.Left : child.Style.Margin.Top)
+                                + mainBorder
+                                + (isRow ? child.Style.Margin.Right : child.Style.Margin.Bottom);
+            cursor += itemMainTotal + gap + spaceBetween + spaceAround;
         }
 
-        // Resolve container height if auto
         if (!box.Style.Height.HasValue)
         {
             float maxCross = children.Max(c => isRow ? c.MarginRect.Height : c.MarginRect.Width);
-            box.ContentRect = box.ContentRect with { Height = isRow ? maxCross : (cursor - y) };
+            box.ContentRect = box.ContentRect with { Height = isRow ? maxCross : Math.Max(0, cursor - y) };
         }
     }
 
