@@ -13,11 +13,11 @@
 
   <!-- Build React app with Vite (requires Node.js + npm) -->
   <Target Name="BuildReactApp" BeforeTargets="Build"
-          Condition="Exists('$(ProjectDir)src/package.json')">
+          Condition="Exists('$(ProjectDir)Web/package.json')">
     <Exec Command="npm install"
-          WorkingDirectory="$(ProjectDir)src"
-          Condition="!Exists('$(ProjectDir)src/node_modules')"/>
-    <Exec Command="npm run build" WorkingDirectory="$(ProjectDir)src"/>
+          WorkingDirectory="$(ProjectDir)Web"
+          Condition="!Exists('$(ProjectDir)Web/node_modules')"/>
+    <Exec Command="npm run build" WorkingDirectory="$(ProjectDir)Web"/>
   </Target>
 
 </Project>
