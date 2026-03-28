@@ -15,6 +15,9 @@ public enum FontWeight { Normal = 400, Bold = 700 }
 public enum TextDecoration { None, Underline, Overline, LineThrough }
 public enum BoxSizing { ContentBox, BorderBox }
 
+/// <summary>A single CSS transition specification parsed from the transition shorthand.</summary>
+public record TransitionSpec(string Property, float Duration, string Easing, float Delay);
+
 /// <summary>Fully resolved CSS properties for a single element.</summary>
 public sealed class ComputedStyle
 {
@@ -74,4 +77,11 @@ public sealed class ComputedStyle
 
     // Cursor
     public string Cursor { get; set; } = "default";
+
+    // CSS Custom Properties (--variable-name: value)
+    // Inherited down the DOM tree by LayoutEngine.BuildBox
+    public Dictionary<string, string> CssVariables { get; set; } = [];
+
+    // CSS Transitions
+    public List<TransitionSpec> Transitions { get; set; } = [];
 }

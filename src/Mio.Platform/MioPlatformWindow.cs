@@ -71,7 +71,7 @@ public sealed class MioPlatformWindow : IWindowSurface, IDisposable
     private void OnLoad()
     {
         _gl = _window!.CreateOpenGL();
-        _input = _window.CreateInput();
+        _input = _window!.CreateInput();
 
         foreach (var kb in _input.Keyboards)
         {
@@ -88,7 +88,7 @@ public sealed class MioPlatformWindow : IWindowSurface, IDisposable
         }
 
         // Create SkiaSharp GRContext from the current OpenGL context
-        var glInterface = GRGlInterface.CreateOpenGl(proc => _window.GLContext!.TryGetProcAddress(proc, out var p) ? p : 0);
+        var glInterface = GRGlInterface.CreateOpenGl(proc => _window!.GLContext!.TryGetProcAddress(proc, out var p) ? p : 0);
         _grContext = GRContext.CreateGl(glInterface);
 
         CreateSkiaSurface((int)Size.Width, (int)Size.Height);
@@ -162,6 +162,28 @@ public sealed class MioPlatformWindow : IWindowSurface, IDisposable
         SilkMouseButton.Middle => Core.MouseButton.Middle,
         _ => Core.MouseButton.Left,
     };
+
+    /// <summary>
+    /// Changes the OS cursor to match the CSS cursor property value.
+    /// "pointer" → hand, "text" → I-beam, etc.
+    /// </summary>
+    public void SetCursor(string cssCursor)
+    {
+        if (_input == null) return;
+        var sc = cssCursor switch
+        {
+            "pointer"      => StandardCursor.Hand,
+            "text"         => StandardCursor.IBeam,
+            "crosshair"    => StandardCursor.Crosshair,
+            "move"         => StandardCursor.ResizeAll,
+            "not-allowed"  => StandardCursor.NotAllowed,
+            "ew-resize"    => StandardCursor.HResize,
+            "ns-resize"    => StandardCursor.VResize,
+            _              => StandardCursor.Default,
+        };
+        foreach (var mouse in _input.Mice)
+            mouse.Cursor.StandardCursor = sc;
+    }
 
     public void Present(ReadOnlySpan<byte> pixels, int width, int height) { /* headless path */ }
 

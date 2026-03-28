@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "target": "ES6",
+    "module": "none",
+    "strict": true,
+    "outDir": "../",
+    "removeComments": false,
+    "noEmitOnError": true
+  },
+  "include": ["app.ts"]
+}

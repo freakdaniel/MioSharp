@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AngleSharp.Dom;
 using Mio.Core;
 using Mio.Css;
@@ -21,11 +22,13 @@ public sealed class MioApplication : IDisposable
     private string? _entryPath;
     private string? _staticFilesRoot;
 
+    private readonly List<(string name, Func<JsonElement, object?> handler)> _invokeHandlers = [];
+
     private MioPlatformWindow? _window;
     private readonly HtmlParser _htmlParser = new();
     private readonly StyleEngine _styleEngine = new();
     private LayoutEngine? _layoutEngine;
-    private readonly Painter _painter = new();
+    private Painter _painter = null!;
     private ScriptEngine? _scriptEngine;
 
     private IDocument? _document;
@@ -56,15 +59,13 @@ public sealed class MioApplication : IDisposable
         return this;
     }
 
-    public MioApplication MapGet(string path, Func<RouteContext, RouteResponse> handler)
+    /// <summary>
+    /// Registers a named C# handler callable from JS via window.mio.invoke(name, args).
+    /// This is the ONLY bridge for JS-to-C# communication. Call before Run().
+    /// </summary>
+    public MioApplication MapInvoke(string name, Func<JsonElement, object?> handler)
     {
-        _router.MapGet(path, handler);
-        return this;
-    }
-
-    public MioApplication MapPost(string path, Func<RouteContext, RouteResponse> handler)
-    {
-        _router.MapPost(path, handler);
+        _invokeHandlers.Add((name, handler));
         return this;
     }
 
@@ -76,13 +77,20 @@ public sealed class MioApplication : IDisposable
 
     public void Run()
     {
-        _layoutEngine = new LayoutEngine(_styleEngine);
-        _scriptEngine = new ScriptEngine(_router);
+        _painter = new Painter(LoadBytes);
+        _layoutEngine = new LayoutEngine(_styleEngine, MeasureText, LoadResource);
+        _scriptEngine = new ScriptEngine();
+
+        // Register all mio.invoke handlers buffered before Run()
+        foreach (var (name, handler) in _invokeHandlers)
+            _scriptEngine.RegisterInvoke(name, handler);
 
         _window = new MioPlatformWindow(_windowOptions);
         _window.Render += OnRender;
         _window.Resized += (_, e) => { _dirtyLayout = true; };
         _window.Closed += (_, _) => { };
+        _window.MouseDown += OnMouseDown;
+        _window.MouseMove += OnMouseMove;
 
         // Load entry HTML
         if (_entryPath != null)
@@ -153,6 +161,67 @@ public sealed class MioApplication : IDisposable
 
         if (_layoutRoot != null)
             _painter.Paint(canvas, _layoutRoot);
+    }
+
+    private void OnMouseDown(object? sender, MouseEventArgs e)
+    {
+        if (_layoutRoot == null || _scriptEngine == null) return;
+        var hit = _layoutRoot.HitTest(e.Position);
+        if (hit?.Element != null)
+            _scriptEngine.FireClick(hit.Element);
+    }
+
+    private void OnMouseMove(object? sender, MouseMoveEventArgs e)
+    {
+        if (_layoutRoot == null || _window == null) return;
+        // Read cursor CSS from the hovered element — this is the web-standard approach:
+        // cursor: pointer in CSS → OS hand cursor, cursor: text → I-beam, etc.
+        var hit = _layoutRoot.HitTest(e.Position);
+        var cursor = "default";
+        if (hit != null)
+        {
+            // Walk up to find the first element with an explicit cursor style
+            var box = hit;
+            while (box != null)
+            {
+                if (box.Style.Cursor != null)
+                {
+                    cursor = box.Style.Cursor;
+                    break;
+                }
+                // Traverse up the layout tree (no parent link → rely on CSS inheritance handled by StyleEngine)
+                break;
+            }
+        }
+        _window.SetCursor(cursor);
+    }
+
+    /// <summary>Fetches a resource by URL path — used by LayoutEngine to load external stylesheets.</summary>
+    private string? LoadResource(string path)
+    {
+        if (_staticFilesRoot == null) return null;
+        var response = _router.Dispatch("GET", path);
+        return response.Status == 200 ? response.BodyText : null;
+    }
+
+    /// <summary>Loads a resource as raw bytes — used by Painter to load images.</summary>
+    private byte[]? LoadBytes(string path)
+    {
+        if (_staticFilesRoot == null) return null;
+        var response = _router.Dispatch("GET", path);
+        return response.Status == 200 ? response.Body : null;
+    }
+
+    /// <summary>Measures text width via SkiaSharp — used by LayoutEngine for accurate layout.</summary>
+    private static float MeasureText(string text, Mio.Css.ComputedStyle style)
+    {
+        using var typeface = SKTypeface.FromFamilyName(
+            style.FontFamily,
+            style.FontWeight == Mio.Css.FontWeight.Bold ? SKFontStyleWeight.Bold : SKFontStyleWeight.Normal,
+            SKFontStyleWidth.Normal,
+            style.FontStyle == Mio.Css.FontStyle.Italic ? SKFontStyleSlant.Italic : SKFontStyleSlant.Upright);
+        using var font = new SKFont(typeface ?? SKTypeface.Default, style.FontSize);
+        return font.MeasureText(text);
     }
 
     public void Dispose()

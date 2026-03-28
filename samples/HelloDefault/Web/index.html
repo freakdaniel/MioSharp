@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>HelloDefault — MioSharp</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="nav">
+            <span class="nav-item active" id="nav-home" onclick="navigate('home')">Home</span>
+            <span class="nav-item" id="nav-invoke" onclick="navigate('invoke')">mio.invoke</span>
+            <span class="nav-item" id="nav-about" onclick="navigate('about')">About</span>
+        </div>
+
+        <!-- Home page -->
+        <div id="page-home" class="page">
+            <div class="card">
+                <h1>Hello from MioSharp!</h1>
+                <p>A pure C# desktop rendering engine powered by SkiaSharp.</p>
+            </div>
+            <div class="card">
+                <div id="counter" class="counter">0</div>
+                <p class="counter-label">seconds running</p>
+            </div>
+            <div class="card">
+                <p id="platform-info">Loading platform info...</p>
+            </div>
+        </div>
+
+        <!-- mio.invoke demo page -->
+        <div id="page-invoke" class="page" style="display: none">
+            <div class="card">
+                <h1>window.mio.invoke Demo</h1>
+                <p>The <strong>only</strong> bridge between JS and C# in MioSharp.</p>
+            </div>
+            <div class="card">
+                <p><strong>Current time from C#:</strong></p>
+                <p id="time-result" class="mono">—</p>
+                <p><button onclick="fetchTime()">Refresh time</button></p>
+            </div>
+            <div class="card">
+                <p><strong>Greet from C#:</strong></p>
+                <p id="greet-result" class="mono">—</p>
+                <p><button onclick="greetUser()">Greet MioSharp</button></p>
+            </div>
+        </div>
+
+        <!-- About page -->
+        <div id="page-about" class="page" style="display: none">
+            <div class="card">
+                <h1>About MioSharp</h1>
+                <p>MioSharp is an early-stage desktop web rendering engine written in pure C#.</p>
+                <p>Stack: Silk.NET + GLFW + OpenGL + SkiaSharp + AngleSharp + Jint</p>
+            </div>
+            <div class="card">
+                <h1>Communication Pattern</h1>
+                <p><strong>window.mio.invoke(cmd, args)</strong> — calls C# from JS</p>
+                <p><strong>fetch(url)</strong> — real HTTP to external services only</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="/script.js"></script>
+</body>
+</html>

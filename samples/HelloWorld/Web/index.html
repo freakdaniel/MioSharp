@@ -3,96 +3,48 @@
 <head>
     <meta charset="UTF-8">
     <title>MioSharp</title>
-    <style>
-        body {
-            font-family: sans-serif;
-            background-color: #f0f4f8;
-            margin: 0;
-            padding: 20px;
-        }
-        .container {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-        .card {
-            background-color: #ffffff;
-            border: 1px solid #dde1e7;
-            border-radius: 8px;
-            padding: 20px;
-        }
-        h1 {
-            color: #1a73e8;
-            margin: 0;
-        }
-        p {
-            color: #444;
-        }
-        .nav {
-            display: flex;
-            flex-direction: row;
-            gap: 12px;
-            background-color: #1a73e8;
-            padding: 12px 20px;
-            border-radius: 8px;
-        }
-        .nav-item {
-            color: #ffffff;
-            font-size: 14px;
-        }
-        .counter {
-            font-size: 48px;
-            color: #1a73e8;
-            text-align: center;
-        }
-        button {
-            background-color: #1a73e8;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            padding: 8px 16px;
-            font-size: 14px;
-            cursor: pointer;
-        }
-    </style>
+    <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
     <div class="container">
         <div class="nav">
-            <span class="nav-item">Home</span>
-            <span class="nav-item">About</span>
-            <span class="nav-item">Contact</span>
+            <span class="nav-item active" id="nav-home" onclick="navigate('home')">Home</span>
+            <span class="nav-item" id="nav-about" onclick="navigate('about')">About</span>
+            <span class="nav-item" id="nav-contact" onclick="navigate('contact')">Contact</span>
         </div>
-        <div class="card">
-            <h1>Hello from MioSharp!</h1>
-            <p>A pure C# web rendering engine powered by SkiaSharp</p>
+
+        <!-- Home page -->
+        <div id="page-home" class="page">
+            <div class="card">
+                <h1>Hello from MioSharp!</h1>
+                <p>A pure C# web rendering engine powered by SkiaSharp</p>
+            </div>
+            <div class="card">
+                <div id="counter" class="counter">0</div>
+            </div>
+            <div class="card">
+                <div id="api-result">Calling C# via mio.invoke...</div>
+            </div>
         </div>
-        <div class="card">
-            <div id="counter" class="counter">0</div>
+
+        <!-- About page -->
+        <div id="page-about" class="page" style="display: none">
+            <div class="card">
+                <h1>About MioSharp</h1>
+                <p>MioSharp is an early-stage desktop web rendering engine written in pure C#.</p>
+                <p>Stack: Silk.NET + GLFW + OpenGL + SkiaSharp + AngleSharp + Jint</p>
+            </div>
         </div>
-        <div class="card">
-            <div id="api-result">Loading API data...</div>
+
+        <!-- Contact page -->
+        <div id="page-contact" class="page" style="display: none">
+            <div class="card">
+                <h1>Contact</h1>
+                <p>This is a demo of in-engine routing via JS click events.</p>
+            </div>
         </div>
     </div>
 
-    <script>
-        // Test JS: update counter
-        var count = 0;
-        function tick() {
-            count++;
-            var el = document.getElementById('counter');
-            if (el) el.textContent = String(count);
-        }
-        setInterval(tick, 1000);
-
-        // Test in-process fetch
-        fetch('/api/hello')
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                var el = document.getElementById('api-result');
-                if (el) el.textContent = 'API says: ' + data.message;
-            })
-            .catch(function(e) { console.error('fetch error', e); });
-    </script>
+    <script src="/script.js"></script>
 </body>
 </html>

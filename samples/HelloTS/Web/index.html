@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>HelloTS — MioSharp</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="nav">
+            <span class="nav-item active" id="nav-home" onclick="navigate('home')">Home</span>
+            <span class="nav-item" id="nav-compute" onclick="navigate('compute')">Compute</span>
+        </div>
+
+        <!-- Home page -->
+        <div id="page-home" class="page">
+            <div class="card">
+                <h1>HelloTS — TypeScript Demo</h1>
+                <p>TypeScript source is compiled by <code>tsc</code> during <code>dotnet build</code>.</p>
+                <p>Typed <code>window.mio.invoke</code> calls with full interface declarations.</p>
+            </div>
+            <div class="card">
+                <p>Current time from C#:</p>
+                <div id="clock" class="counter">--:--:--</div>
+            </div>
+        </div>
+
+        <!-- Compute page -->
+        <div id="page-compute" class="page" style="display: none">
+            <div class="card">
+                <h1>C# Math via mio.invoke</h1>
+                <p>Typed request: <code>invoke&lt;ComputeResult&gt;('compute', &#123; a, b &#125;)</code></p>
+            </div>
+            <div class="card">
+                <p>a = <input id="input-a" type="text" value="3" style="width: 60px"></p>
+                <p>b = <input id="input-b" type="text" value="4" style="width: 60px"></p>
+                <p><button onclick="runCompute()">Compute</button></p>
+                <pre id="compute-result" class="mono">—</pre>
+            </div>
+        </div>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>

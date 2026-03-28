@@ -1,3 +1,5 @@
 obj/
 bin/
 .[cC]*/
+dist/
+node_modules/

@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using AngleSharp.Css;
 using AngleSharp.Css.Dom;
 using AngleSharp.Css.Parser;
@@ -15,6 +16,10 @@ public sealed class StyleEngine
     // Parsed stylesheet rules: (specificity, selector, declarations)
     private readonly List<(int specificity, ISelector selector, ICssStyleDeclaration declarations)> _rules = [];
     private static readonly CssParser _cssParser = new();
+
+    // Viewport dimensions — updated by LayoutEngine before each layout pass
+    public static float ViewportWidth  = 1280f;
+    public static float ViewportHeight = 720f;
 
     /// <summary>Parses a CSS string (from a &lt;style&gt; tag or .css file) and registers its rules.</summary>
     public void LoadStylesheet(string css)
@@ -40,9 +45,15 @@ public sealed class StyleEngine
     public void ClearStylesheets() => _rules.Clear();
 
     /// <summary>Computes the final style for an element, walking its ancestor chain.</summary>
-    public ComputedStyle Compute(IElement element)
+    /// <param name="inheritedVars">CSS custom properties inherited from the parent element.</param>
+    public ComputedStyle Compute(IElement element, IReadOnlyDictionary<string, string>? inheritedVars = null)
     {
         var style = new ComputedStyle();
+
+        // Seed with inherited CSS variables (child may override)
+        if (inheritedVars != null)
+            foreach (var kv in inheritedVars)
+                style.CssVariables[kv.Key] = kv.Value;
 
         // 1. User-agent tag defaults
         ApplyTagDefaults(element.TagName.ToLowerInvariant(), style);
@@ -212,6 +223,21 @@ public sealed class StyleEngine
 
     public static void ApplyProperty(string prop, string value, ComputedStyle s)
     {
+        // CSS custom properties (--variable-name: value)
+        if (prop.StartsWith("--"))
+        {
+            s.CssVariables[prop] = value;
+            return;
+        }
+
+        // Resolve var(--x) references before applying the property
+        if (value.Contains("var(--"))
+        {
+            var resolved = ResolveVars(value, s.CssVariables);
+            if (string.IsNullOrEmpty(resolved)) return;
+            value = resolved;
+        }
+
         switch (prop)
         {
             case "display": s.Display = ParseDisplay(value); break;
@@ -244,8 +270,36 @@ public sealed class StyleEngine
             case "padding-left": s.Padding = s.Padding with { Left = ParseLength(value) ?? 0 }; break;
 
             case "border-width": s.BorderWidth = ParseThickness(value); break;
+            case "border-top-width": s.BorderWidth = s.BorderWidth with { Top = ParseLength(value) ?? 0 }; break;
+            case "border-right-width": s.BorderWidth = s.BorderWidth with { Right = ParseLength(value) ?? 0 }; break;
+            case "border-bottom-width": s.BorderWidth = s.BorderWidth with { Bottom = ParseLength(value) ?? 0 }; break;
+            case "border-left-width": s.BorderWidth = s.BorderWidth with { Left = ParseLength(value) ?? 0 }; break;
+
             case "border-color": s.BorderColor = ParseColor(value) ?? Color.Black; break;
+            case "border-top-color":
+            case "border-right-color":
+            case "border-bottom-color":
+            case "border-left-color":
+                { var c = ParseColor(value); if (c.HasValue) s.BorderColor = c.Value; }
+                break;
+
+            // border-style is ignored (we only care about width/color)
+            case "border-style":
+            case "border-top-style":
+            case "border-right-style":
+            case "border-bottom-style":
+            case "border-left-style":
+                break;
+
             case "border-radius": s.BorderRadius = ParseLength(value) ?? 0; break;
+            // Individual corner radii — map all to our uniform BorderRadius
+            case "border-top-left-radius":
+            case "border-top-right-radius":
+            case "border-bottom-right-radius":
+            case "border-bottom-left-radius":
+                { var r = ParseLength(value); if (r.HasValue && s.BorderRadius == 0) s.BorderRadius = r.Value; }
+                break;
+
             case "border":
                 ParseBorderShorthand(value, s);
                 break;
@@ -260,7 +314,9 @@ public sealed class StyleEngine
             case "font-style": s.FontStyle = value == "italic" ? FontStyle.Italic : FontStyle.Normal; break;
             case "line-height": s.LineHeight = ParseLength(value) ?? 1.2f; break;
             case "text-align": s.TextAlign = ParseTextAlign(value); break;
-            case "text-decoration": s.TextDecoration = value.Contains("underline") ? TextDecoration.Underline : TextDecoration.None; break;
+            case "text-decoration":
+            case "text-decoration-line":
+                s.TextDecoration = value.Contains("underline") ? TextDecoration.Underline : TextDecoration.None; break;
 
             case "flex-direction": s.FlexDirection = ParseFlexDirection(value); break;
             case "flex-wrap": s.FlexWrap = value == "wrap" ? FlexWrap.Wrap : FlexWrap.NoWrap; break;
@@ -269,30 +325,162 @@ public sealed class StyleEngine
             case "flex-grow": s.FlexGrow = ParseFloat(value) ?? 0; break;
             case "flex-shrink": s.FlexShrink = ParseFloat(value) ?? 1; break;
             case "flex-basis": s.FlexBasis = ParseLength(value); break;
-            case "gap": s.Gap = ParseLength(value); break;
+            case "gap":
+            case "column-gap":
+            case "row-gap":
+                { var gv = ParseLength(value); if (gv.HasValue) s.Gap = gv; }
+                break;
 
             case "z-index": s.ZIndex = (int)(ParseFloat(value) ?? 0); break;
             case "opacity": s.Opacity = ParseFloat(value) ?? 1; break;
             case "cursor": s.Cursor = value; break;
+
+            // CSS Transitions
+            case "transition": s.Transitions = ParseTransitions(value); break;
+            case "transition-property":
+            case "transition-duration":
+            case "transition-timing-function":
+            case "transition-delay":
+                break; // individual sub-properties handled via shorthand only for now
+
+            // Ignore layout-only hints we don't use
+            case "visibility":
+            case "pointer-events":
+            case "user-select":
+            case "list-style":
+            case "list-style-type":
+            case "outline":
+            case "outline-color":
+            case "outline-width":
+            case "outline-style":
+            case "resize":
+            case "appearance":
+            case "white-space":
+            case "word-break":
+            case "word-wrap":
+            case "overflow-x":
+            case "overflow-y":
+            case "vertical-align":
+            case "float":
+            case "clear":
+            case "table-layout":
+            case "border-collapse":
+            case "border-spacing":
+            case "font":
+            case "text-transform":
+            case "text-overflow":
+            case "text-indent":
+            case "letter-spacing":
+            case "word-spacing":
+            case "content":
+            case "animation":
+            case "animation-name":
+            case "animation-duration":
+            case "animation-delay":
+            case "animation-iteration-count":
+            case "animation-timing-function":
+            case "animation-fill-mode":
+            case "transform":
+            case "transform-origin":
+            case "will-change":
+            case "filter":
+            case "backdrop-filter":
+            case "mix-blend-mode":
+            case "isolation":
+            case "object-fit":
+            case "object-position":
+            case "aspect-ratio":
+            case "grid-template":
+            case "grid-template-columns":
+            case "grid-template-rows":
+            case "grid-template-areas":
+            case "grid-area":
+            case "grid-column":
+            case "grid-row":
+            case "place-items":
+            case "place-content":
+            case "place-self":
+            case "align-self":
+            case "align-content":
+            case "justify-self":
+            case "justify-items":
+            case "flex-flow":
+            case "flex":
+            case "background-image":
+            case "background-repeat":
+            case "background-position":
+            case "background-size":
+            case "background-attachment":
+            case "background-clip":
+            case "background-origin":
+            case "box-shadow":
+            case "text-shadow":
+            case "scroll-behavior":
+            case "overscroll-behavior":
+            case "touch-action":
+                break; // intentionally ignored
         }
     }
+
+    private static readonly System.Globalization.CultureInfo InvCulture = System.Globalization.CultureInfo.InvariantCulture;
+    private static readonly System.Globalization.NumberStyles FloatStyle = System.Globalization.NumberStyles.Float;
 
     public static float? ParseLength(string v)
     {
         v = v.Trim().ToLowerInvariant();
         if (v == "0") return 0f;
-        if (v.EndsWith("px") && float.TryParse(v[..^2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var px)) return px;
-        if (v.EndsWith("em") && float.TryParse(v[..^2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var em)) return em * 16;
-        if (v.EndsWith("rem") && float.TryParse(v[..^3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var rem)) return rem * 16;
-        if (v.EndsWith("%") && float.TryParse(v[..^1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var pct)) return pct; // parent-relative, resolved later
-        if (float.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var raw)) return raw;
+        if (v.StartsWith("calc(")) return null; // calc() stub — not supported, return null (use default)
+        if (v.EndsWith("px") && float.TryParse(v[..^2], FloatStyle, InvCulture, out var px)) return px;
+        if (v.EndsWith("em") && float.TryParse(v[..^2], FloatStyle, InvCulture, out var em)) return em * 16;
+        if (v.EndsWith("rem") && float.TryParse(v[..^3], FloatStyle, InvCulture, out var rem)) return rem * 16;
+        if (v.EndsWith("vw") && float.TryParse(v[..^2], FloatStyle, InvCulture, out var vw)) return vw * ViewportWidth / 100f;
+        if (v.EndsWith("vh") && float.TryParse(v[..^2], FloatStyle, InvCulture, out var vh)) return vh * ViewportHeight / 100f;
+        if (v.EndsWith("%") && float.TryParse(v[..^1], FloatStyle, InvCulture, out var pct)) return pct; // parent-relative, resolved later
+        if (float.TryParse(v, FloatStyle, InvCulture, out var raw)) return raw;
         return null;
     }
 
     private static float? ParseFloat(string v)
     {
         v = v.Trim();
-        return float.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var f) ? f : null;
+        return float.TryParse(v, FloatStyle, InvCulture, out var f) ? f : null;
+    }
+
+    /// <summary>Resolves var(--x, fallback) references in a CSS value using the element's CssVariables map.</summary>
+    private static string ResolveVars(string value, Dictionary<string, string> vars)
+    {
+        return Regex.Replace(value, @"var\((--[^,)]+)(?:,\s*([^)]+))?\)", m =>
+        {
+            var name     = m.Groups[1].Value.Trim();
+            var fallback = m.Groups[2].Success ? m.Groups[2].Value.Trim() : "";
+            return vars.TryGetValue(name, out var v) ? v : fallback;
+        });
+    }
+
+    /// <summary>Parses a CSS transition shorthand into a list of TransitionSpec records.</summary>
+    private static List<TransitionSpec> ParseTransitions(string value)
+    {
+        var result = new List<TransitionSpec>();
+        foreach (var part in value.Split(','))
+        {
+            var tokens = part.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length < 2) continue;
+            var prop     = tokens[0];
+            var duration = ParseLengthSeconds(tokens[1]) ?? 0.3f;
+            var easing   = tokens.Length > 2 ? tokens[2] : "ease";
+            var delay    = tokens.Length > 3 ? (ParseLengthSeconds(tokens[3]) ?? 0f) : 0f;
+            result.Add(new TransitionSpec(prop, duration, easing, delay));
+        }
+        return result;
+    }
+
+    /// <summary>Parses a CSS time value (e.g. "0.3s", "300ms") to seconds.</summary>
+    private static float? ParseLengthSeconds(string v)
+    {
+        v = v.Trim().ToLowerInvariant();
+        if (v.EndsWith("ms") && float.TryParse(v[..^2], FloatStyle, InvCulture, out var ms)) return ms / 1000f;
+        if (v.EndsWith("s")  && float.TryParse(v[..^1], FloatStyle, InvCulture, out var s))  return s;
+        return null;
     }
 
     private static Thickness ParseThickness(string v)
@@ -377,8 +565,8 @@ public sealed class StyleEngine
         "block" => Display.Block,
         "inline" => Display.Inline,
         "inline-block" => Display.InlineBlock,
-        "flex" => Display.Flex,
-        "grid" => Display.Grid,
+        "flex" or "inline-flex" => Display.Flex,
+        "grid" or "inline-grid" => Display.Grid,
         "none" => Display.None,
         _ => Display.Block,
     };

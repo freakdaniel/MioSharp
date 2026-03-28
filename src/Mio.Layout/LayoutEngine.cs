@@ -10,30 +10,100 @@ namespace Mio.Layout;
 public sealed class LayoutEngine
 {
     private readonly StyleEngine _style;
+    private readonly Func<string, ComputedStyle, float>? _measureText;
+    private readonly Func<string, string?>? _loadResource;
 
-    public LayoutEngine(StyleEngine style) => _style = style;
+    /// <param name="measureText">Optional: returns exact rendered pixel width of a string.
+    /// Falls back to charCount × fontSize × 0.55 when null.</param>
+    /// <param name="loadResource">Optional: fetches a resource by URL path and returns its text content.
+    /// Used to load external stylesheets referenced by &lt;link rel="stylesheet"&gt;.</param>
+    public LayoutEngine(StyleEngine style,
+        Func<string, ComputedStyle, float>? measureText = null,
+        Func<string, string?>? loadResource = null)
+    {
+        _style = style;
+        _measureText = measureText;
+        _loadResource = loadResource;
+    }
+
+    private float MeasureTextWidth(string text, ComputedStyle style) =>
+        _measureText != null ? _measureText(text, style) : text.Length * style.FontSize * 0.55f;
 
     public LayoutBox LayoutDocument(IDocument document, Size viewport)
     {
-        // Load all <style> tag contents into the StyleEngine before layout
+        // Load all stylesheets before layout (re-done each frame so JS-mutated styles stay current)
         _style.ClearStylesheets();
+
+        // 1. External <link rel="stylesheet" href="..."> files
+        if (_loadResource != null)
+        {
+            foreach (var link in document.QuerySelectorAll("link"))
+            {
+                var rel  = link.GetAttribute("rel")  ?? "";
+                var href = link.GetAttribute("href") ?? "";
+                if (rel.Contains("stylesheet", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(href))
+                {
+                    var css = _loadResource(href);
+                    if (!string.IsNullOrEmpty(css))
+                        _style.LoadStylesheet(css);
+                }
+            }
+        }
+
+        // 2. Inline <style> blocks
         foreach (var styleEl in document.QuerySelectorAll("style"))
         {
             if (!string.IsNullOrWhiteSpace(styleEl.TextContent))
                 _style.LoadStylesheet(styleEl.TextContent);
         }
 
+        // Sync viewport dimensions for vw/vh unit resolution
+        Mio.Css.StyleEngine.ViewportWidth  = viewport.Width;
+        Mio.Css.StyleEngine.ViewportHeight = viewport.Height;
+
         var root = BuildBox(document.Body ?? document.DocumentElement);
         PerformLayout(root, new Rect(0, 0, viewport.Width, viewport.Height));
         return root;
     }
 
-    private LayoutBox BuildBox(IElement element)
+    private LayoutBox BuildBox(IElement element, IReadOnlyDictionary<string, string>? inheritedVars = null)
     {
-        var style = _style.Compute(element);
+        var style = _style.Compute(element, inheritedVars);
         var box = new LayoutBox { Element = element, Style = style };
 
         if (style.Display == Display.None) return box;
+
+        var tagLower = element.TagName.ToLowerInvariant();
+
+        // Handle <svg> — capture outer HTML for Painter to render via Svg.Skia
+        bool isSvgNs = element.GetAttribute("data-ns")?.Contains("svg", StringComparison.OrdinalIgnoreCase) == true;
+        if (tagLower == "svg" || isSvgNs)
+        {
+            var svgHtml = element.OuterHtml;
+            if (!style.Width.HasValue && float.TryParse(
+                    element.GetAttribute("width"), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var svgW))
+                style.Width = svgW;
+            if (!style.Height.HasValue && float.TryParse(
+                    element.GetAttribute("height"), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var svgH))
+                style.Height = svgH;
+            // Default SVG size if neither CSS nor attributes specify it
+            style.Width  ??= 300;
+            style.Height ??= 150;
+            return new LayoutBox { Element = element, Style = style, SvgContent = svgHtml };
+        }
+
+        // Handle <img> — capture src for Painter, size from attributes/CSS
+        if (tagLower == "img")
+        {
+            var src = element.GetAttribute("src") ?? "";
+            if (!src.StartsWith("http") && !src.StartsWith("/") && !src.StartsWith("data:"))
+                src = "/" + src;
+            if (!style.Width.HasValue && int.TryParse(element.GetAttribute("width"), out var aw)) style.Width = aw;
+            if (!style.Height.HasValue && int.TryParse(element.GetAttribute("height"), out var ah)) style.Height = ah;
+            return new LayoutBox { Element = element, Style = style, ImageSrc = src };
+        }
 
         foreach (var child in element.ChildNodes)
         {
@@ -47,19 +117,20 @@ public sealed class LayoutEngine
                         TextContent = txt,
                         Style = new ComputedStyle
                         {
-                            Display = Display.Inline,
-                            Color = style.Color,
-                            FontSize = style.FontSize,
+                            Display    = Display.Inline,
+                            Color      = style.Color,
+                            FontSize   = style.FontSize,
                             FontFamily = style.FontFamily,
                             FontWeight = style.FontWeight,
-                            FontStyle = style.FontStyle,
+                            FontStyle  = style.FontStyle,
                         }
                     });
                 }
             }
             else if (child is IElement childEl)
             {
-                var childBox = BuildBox(childEl);
+                // Pass inherited CSS variables down the tree
+                var childBox = BuildBox(childEl, style.CssVariables);
                 if (childBox.Style.Display != Display.None)
                     box.Children.Add(childBox);
             }
@@ -113,9 +184,8 @@ public sealed class LayoutEngine
             float curX = x;
             foreach (var inl in inlineRun)
             {
-                // Approximate inline width by text length * fontsize * 0.55
                 float naturalW = inl.IsTextBox
-                    ? inl.TextContent!.Length * inl.Style.FontSize * 0.55f
+                    ? MeasureTextWidth(inl.TextContent!, inl.Style)
                     : (inl.Style.Width ?? innerW);
                 float inlW = innerW < 99_000f ? Math.Min(naturalW, innerW) : naturalW;
                 inl.ContentRect = new Rect(curX, cursorY, inlW, lineH);

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Mio.App\Mio.App.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!--
+    Compile TypeScript before the C# build.
+    Requires `npm install -g typescript` (global tsc). Skipped if tsc is not available.
+    To install: npm install -g typescript
+  -->
+  <Target Name="CompileTypeScript" BeforeTargets="Build"
+          Condition="Exists('$(ProjectDir)Web/src/tsconfig.json')">
+    <Exec Command="tsc" WorkingDirectory="$(ProjectDir)Web/src"
+          ContinueOnError="WarnAndContinue"/>
+  </Target>
+
+</Project>
