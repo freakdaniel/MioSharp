@@ -8,7 +8,7 @@ using Jint.Native;
 namespace Mio.Script;
 
 /// <summary>
-/// Hosts a Jint ES2021 engine with DOM bindings, real HTTP fetch, and window.mio.invoke bridge.
+/// Hosts a Jint ES2021+ engine with DOM bindings, real HTTP fetch, and window.mio.invoke bridge.
 /// </summary>
 public sealed class ScriptEngine : IDisposable
 {
@@ -24,6 +24,9 @@ public sealed class ScriptEngine : IDisposable
     private int _rafIdCounter = 0;
     private IDocument? _document;
     private DocumentShim? _documentShim;
+
+    /// <summary>Window-level event listeners (resize, error, etc.).</summary>
+    private readonly Dictionary<string, List<JsValue>> _windowListeners = [];
 
     /// <summary>Fires whenever JS mutates the DOM (triggers re-layout).</summary>
     public event Action? DomChanged;
@@ -69,7 +72,8 @@ public sealed class ScriptEngine : IDisposable
         foreach (var (_, cb) in rafBatch)
         {
             try { _engine.Invoke(cb, JsValue.FromObject(_engine, elapsed.TotalMilliseconds)); }
-            catch (Exception ex) { Console.Error.WriteLine($"[rAF] {ex.Message}"); }
+            catch (Exception ex) { Console.Error.WriteLine($"[rAF] {ex.Message}\n{ex.StackTrace}"); }
+            FlushMicrotasks();
         }
 
         // setTimeout
@@ -78,7 +82,8 @@ public sealed class ScriptEngine : IDisposable
         {
             _timers.Remove(t);
             try { _engine.Invoke(t.fn); }
-            catch (Exception ex) { Console.Error.WriteLine($"[Timer] {ex.Message}"); }
+            catch (Exception ex) { Console.Error.WriteLine($"[Timer] {ex.Message}\n{ex.StackTrace}"); }
+            FlushMicrotasks();
         }
 
         // setInterval
@@ -89,21 +94,34 @@ public sealed class ScriptEngine : IDisposable
             {
                 _intervals[i] = (iv.id, iv.period, elapsed + iv.period, iv.fn);
                 try { _engine.Invoke(iv.fn); }
-                catch (Exception ex) { Console.Error.WriteLine($"[Interval] {ex.Message}"); }
+                catch (Exception ex) { Console.Error.WriteLine($"[Interval] {ex.Message}\n{ex.StackTrace}"); }
+                FlushMicrotasks();
             }
         }
+
+        // Final flush for any remaining microtasks
+        FlushMicrotasks();
     }
 
-    /// <summary>Dispatches a click event to the given element and bubbles up the DOM tree.</summary>
+    /// <summary>Dispatches a click event to the given element using proper DOM event bubbling.</summary>
     public void FireClick(IElement element)
     {
         if (_documentShim == null) return;
-        var el = element;
-        while (el != null)
-        {
-            _documentShim.Wrap(el).FireEvent("click");
-            el = el.ParentElement;
-        }
+        var shim = _documentShim.Wrap(element);
+        // Create a proper MouseEvent with all properties Vue/React check
+        var eventObj = _engine.Evaluate(
+            "(function(){var e=new MouseEvent('click',{bubbles:true,cancelable:true});" +
+            "e.button=0;e.detail=1;e.clientX=0;e.clientY=0;e.screenX=0;e.screenY=0;" +
+            "e.pageX=0;e.pageY=0;e.offsetX=0;e.offsetY=0;" +
+            "e.altKey=false;e.ctrlKey=false;e.metaKey=false;e.shiftKey=false;" +
+            "e.which=1;e.isTrusted=true;return e})()");
+        _engine.Invoke(shim.Get("dispatchEvent", shim), JsValue.Undefined, [eventObj]);
+    }
+
+    private void FlushMicrotasks()
+    {
+        try { _engine.Advanced.ProcessTasks(); }
+        catch (Exception ex) { Console.Error.WriteLine($"[ProcessTasks] {ex.Message}\n{ex.StackTrace}"); }
     }
 
     public void Dispose() => _engine.Dispose();
@@ -156,6 +174,19 @@ public sealed class ScriptEngine : IDisposable
             catch (Exception ex) { Console.Error.WriteLine($"[microtask] {ex.Message}"); }
         }));
 
+        // window.addEventListener / removeEventListener
+        _engine.SetValue("__windowAddEvt__", new Action<string, JsValue>((type, handler) =>
+        {
+            if (!_windowListeners.TryGetValue(type, out var list))
+                _windowListeners[type] = list = [];
+            list.Add(handler);
+        }));
+        _engine.SetValue("__windowRemoveEvt__", new Action<string, JsValue>((type, handler) =>
+        {
+            if (_windowListeners.TryGetValue(type, out var list))
+                list.Remove(handler);
+        }));
+
         // Real HTTP fetch via HttpClient (for external network requests ONLY)
         _engine.SetValue("__fetchImpl__", new Func<string, string, string?, string>((url, method, bodyJson) =>
         {
@@ -188,10 +219,10 @@ public sealed class ScriptEngine : IDisposable
             return JsonSerializer.Serialize(handler(args));
         }));
 
-        // JS layer: sync Promise helpers, fetch wrapper, mio.invoke wrapper, stubs
+        // JS layer: Promise helpers, fetch wrapper, mio.invoke wrapper, browser stubs
         _engine.Execute(@"
 (function() {
-    // Sync thenable helpers — used by both fetch and mio.invoke
+    // Sync thenable helpers — used by fetch and mio.invoke (sync C# calls)
     function __mioResolve__(value) {
         return {
             _v: value, _ok: true,
@@ -208,90 +239,163 @@ public sealed class ScriptEngine : IDisposable
     function __mioReject__(err) {
         return {
             _e: err, _ok: false,
-            then: function() { return this; },
-            catch: function(f) { try { f(this._e); } catch(e) {} return this; },
+            then: function(_, f) { if (f) { try { return __mioResolve__(f(this._e)); } catch(e) { return __mioReject__(e); } } return this; },
+            catch: function(f) { try { return __mioResolve__(f(this._e)); } catch(e) { return __mioReject__(e); } },
             finally: function(f) { try { f(); } catch(e) {} return this; }
         };
     }
     window.__mioResolve__ = __mioResolve__;
     window.__mioReject__  = __mioReject__;
 
-    // Sync Promise override (Jint's native Promise is async and incompatible)
-    var SyncPromise = {
-        resolve: function(v) { return (v && typeof v.then === 'function') ? v : __mioResolve__(v); },
-        reject:  function(e) { return __mioReject__(e); },
-        all: function(arr) {
-            var results = [];
-            for (var i = 0; i < arr.length; i++) {
-                var p = arr[i];
-                if (p && typeof p.then === 'function') {
-                    var val;
-                    p.then(function(v) { val = v; });
-                    results.push(val);
-                } else { results.push(p); }
-            }
-            return __mioResolve__(results);
-        },
-        allSettled: function(arr) {
-            return SyncPromise.all(arr);
-        }
-    };
-    try { Promise = SyncPromise; } catch(e) {}
-    try { globalThis.Promise = SyncPromise; } catch(e) {}
+    // Keep native Promise intact — Jint supports it natively.
+    // SyncPromise is only used for fetch/mio.invoke which are synchronous C# calls.
 
     // performance.now
     window.performance = { now: function() { return __perfNow__(); }, timeOrigin: 0 };
 
-    // fetch — real HTTP via HttpClient. Use ONLY for external network requests.
-    // To call C# backend, use window.mio.invoke() instead.
+    // window.addEventListener / removeEventListener / dispatchEvent
+    window.addEventListener = function(type, handler, options) { __windowAddEvt__(type, handler); };
+    window.removeEventListener = function(type, handler, options) { __windowRemoveEvt__(type, handler); };
+    window.dispatchEvent = function(event) { return true; };
+
+    // fetch — real HTTP via HttpClient
     window.fetch = function(url, options) {
         var method = (options && options.method) ? options.method : 'GET';
         var body   = (options && options.body)   ? options.body   : null;
         var raw    = __fetchImpl__(url, method, body);
         var parsed = JSON.parse(raw);
-        if (parsed.__error__) return __mioReject__(new Error(parsed.__error__));
+        if (parsed.__error__) return Promise.reject(new Error(parsed.__error__));
         var resp = {
-            status: parsed.status, ok: parsed.ok,
-            json: function() { return __mioResolve__(JSON.parse(parsed.body)); },
-            text: function() { return __mioResolve__(parsed.body); },
-            arrayBuffer: function() { return __mioReject__(new Error('arrayBuffer() not supported')); }
+            status: parsed.status, ok: parsed.ok, headers: { get: function() { return null; } },
+            json: function() { return Promise.resolve(JSON.parse(parsed.body)); },
+            text: function() { return Promise.resolve(parsed.body); },
+            arrayBuffer: function() { return Promise.reject(new Error('arrayBuffer() not supported')); }
         };
-        return __mioResolve__(resp);
+        return Promise.resolve(resp);
     };
 
     // window.mio.invoke — THE bridge between JS and C# backend
     window.mio.invoke = function(cmd, args) {
         var json = JSON.stringify(args !== undefined ? args : null);
         try {
-            return __mioResolve__(JSON.parse(__mioInvoke__(cmd, json)));
+            return Promise.resolve(JSON.parse(__mioInvoke__(cmd, json)));
         } catch(e) {
-            return __mioReject__(e);
+            return Promise.reject(e);
         }
     };
 
     // Browser environment stubs
-    window.location  = { href: '/', pathname: '/', search: '', hash: '', origin: 'mio://app' };
-    window.history   = { pushState: function(){}, replaceState: function(){}, back: function(){} };
-    window.navigator = { userAgent: 'MioSharp/1.0', platform: 'Win32', language: 'en-US', onLine: true };
-    window.screen    = { width: 1280, height: 720, availWidth: 1280, availHeight: 720 };
-    window.CustomEvent = function(type, opts) {
-        return { type: type, detail: opts && opts.detail, bubbles: opts && opts.bubbles || false,
-                 preventDefault: function(){}, stopPropagation: function(){} };
-    };
-    window.Event = window.CustomEvent;
-    window.getComputedStyle = function(el) { return el && el.style ? el.style : {}; };
-    window.matchMedia = function() { return { matches: false, addListener: function(){}, removeListener: function(){} }; };
-    window.MutationObserver = function(cb) {
-        return { observe: function(){}, disconnect: function(){}, takeRecords: function(){ return []; } };
-    };
-    window.ResizeObserver = window.MutationObserver;
-    window.IntersectionObserver = window.MutationObserver;
+    window.location  = { href: '/', pathname: '/', search: '', hash: '', origin: 'mio://app',
+                         host: 'app', hostname: 'app', port: '', protocol: 'mio:',
+                         assign: function(){}, replace: function(){}, reload: function(){} };
+    window.history   = { pushState: function(){}, replaceState: function(){}, back: function(){},
+                         forward: function(){}, go: function(){}, length: 1, state: null };
+    window.navigator = { userAgent: 'MioSharp/1.0', platform: 'Win32', language: 'en-US',
+                         languages: ['en-US'], onLine: true, cookieEnabled: false,
+                         vendor: 'MioSharp', appVersion: '1.0' };
+    window.screen    = { width: 1280, height: 720, availWidth: 1280, availHeight: 720,
+                         colorDepth: 24, pixelDepth: 24, orientation: { type: 'landscape-primary', angle: 0 } };
 
-    // DOM constructor stubs — Vue/React use instanceof checks and typeof guards against these.
-    // Stubs must be DEFINED so that: e instanceof SVGElement does not throw ReferenceError.
-    // instanceof always returns false for our C# shims, which is correct:
-    // the app mount container (div#app) is never an SVGElement.
-    // SVG elements inside the app are detected via the data-ns attribute set by createElementNS.
+    // Event constructors
+    window.Event = function Event(type, opts) {
+        opts = opts || {};
+        this.type = type;
+        this.bubbles = !!opts.bubbles;
+        this.cancelable = !!opts.cancelable;
+        this.composed = !!opts.composed;
+        this.defaultPrevented = false;
+        this.target = null;
+        this.currentTarget = null;
+        this.eventPhase = 0;
+        this.timeStamp = __perfNow__();
+        this.isTrusted = false;
+    };
+    window.Event.prototype.preventDefault = function() { this.defaultPrevented = true; };
+    window.Event.prototype.stopPropagation = function() { this._stopped = true; };
+    window.Event.prototype.stopImmediatePropagation = function() { this._stopped = true; };
+    window.Event.prototype.composedPath = function() { return []; };
+
+    window.CustomEvent = function CustomEvent(type, opts) {
+        window.Event.call(this, type, opts);
+        this.detail = (opts && opts.detail !== undefined) ? opts.detail : null;
+    };
+    window.CustomEvent.prototype = Object.create(window.Event.prototype);
+    window.CustomEvent.prototype.constructor = window.CustomEvent;
+
+    // KeyboardEvent, MouseEvent, FocusEvent stubs
+    window.KeyboardEvent = function KeyboardEvent(type, opts) { window.Event.call(this, type, opts); this.key = (opts && opts.key) || ''; this.code = (opts && opts.code) || ''; };
+    window.KeyboardEvent.prototype = Object.create(window.Event.prototype);
+    window.MouseEvent = function MouseEvent(type, opts) { window.Event.call(this, type, opts); this.clientX = 0; this.clientY = 0; this.button = 0; };
+    window.MouseEvent.prototype = Object.create(window.Event.prototype);
+    window.FocusEvent = function FocusEvent(type, opts) { window.Event.call(this, type, opts); this.relatedTarget = null; };
+    window.FocusEvent.prototype = Object.create(window.Event.prototype);
+    window.InputEvent = function InputEvent(type, opts) { window.Event.call(this, type, opts); this.data = (opts && opts.data) || null; this.inputType = (opts && opts.inputType) || ''; };
+    window.InputEvent.prototype = Object.create(window.Event.prototype);
+
+    window.getComputedStyle = function(el) { return el && el.style ? el.style : {}; };
+    window.getSelection = function() {
+        return { anchorNode:null, anchorOffset:0, focusNode:null, focusOffset:0,
+                 isCollapsed:true, rangeCount:0, type:'None',
+                 addRange:function(){}, removeAllRanges:function(){}, collapse:function(){},
+                 getRangeAt:function(){ return {startContainer:null,startOffset:0,endContainer:null,endOffset:0,
+                     collapsed:true,commonAncestorContainer:null,
+                     setStart:function(){},setEnd:function(){},cloneRange:function(){return this},
+                     toString:function(){return ''}}; },
+                 toString:function(){ return ''; } };
+    };
+    window.matchMedia = function(query) {
+        return { matches: false, media: query || '',
+                 addListener: function(){}, removeListener: function(){},
+                 addEventListener: function(){}, removeEventListener: function(){},
+                 dispatchEvent: function(){ return true; } };
+    };
+    window.MutationObserver = function(cb) {
+        this._cb = cb;
+        this.observe = function(){};
+        this.disconnect = function(){};
+        this.takeRecords = function(){ return []; };
+    };
+    window.ResizeObserver = function(cb) {
+        this._cb = cb;
+        this.observe = function(){};
+        this.unobserve = function(){};
+        this.disconnect = function(){};
+    };
+    window.IntersectionObserver = function(cb) {
+        this._cb = cb;
+        this.observe = function(){};
+        this.unobserve = function(){};
+        this.disconnect = function(){};
+    };
+
+    // TextEncoder / TextDecoder
+    window.TextEncoder = function TextEncoder() { this.encoding = 'utf-8'; };
+    window.TextEncoder.prototype.encode = function(str) {
+        str = str || '';
+        var arr = [];
+        for (var i = 0; i < str.length; i++) {
+            var c = str.charCodeAt(i);
+            if (c < 128) arr.push(c);
+            else if (c < 2048) { arr.push((c >> 6) | 192); arr.push((c & 63) | 128); }
+            else { arr.push((c >> 12) | 224); arr.push(((c >> 6) & 63) | 128); arr.push((c & 63) | 128); }
+        }
+        return arr;
+    };
+    window.TextDecoder = function TextDecoder(encoding) { this.encoding = encoding || 'utf-8'; };
+    window.TextDecoder.prototype.decode = function(arr) {
+        if (!arr || !arr.length) return '';
+        var s = '';
+        for (var i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i] & 0xFF);
+        return s;
+    };
+
+    // AbortController stub
+    window.AbortController = function AbortController() {
+        this.signal = { aborted: false, addEventListener: function(){}, removeEventListener: function(){} };
+        this.abort = function() { this.signal.aborted = true; };
+    };
+
+    // DOM constructor stubs — Vue/React use instanceof checks and typeof guards.
     window.Node             = function Node(){};
     window.Element          = function Element(){};
     window.HTMLElement      = function HTMLElement(){};
@@ -301,11 +405,9 @@ public sealed class ScriptEngine : IDisposable
     window.Text             = function Text(){};
     window.Comment          = function Comment(){};
     window.DocumentFragment = function DocumentFragment(){};
-    window.MathMLElement    = void 0; // typeof MathMLElement is not function (intentional)
+    window.MathMLElement    = void 0;
 
-    // Override Symbol.hasInstance so that 'el instanceof SVGElement/HTMLElement/Element' works
-    // on our C# shims. Our ElementShim exposes getAttribute(), nodeType, etc. via reflection.
-    // SVG elements are tagged with data-ns='http://www.w3.org/2000/svg' by createElementNS.
+    // Override Symbol.hasInstance for proper instanceof checks on our C# shims
     try {
         Object.defineProperty(SVGElement, Symbol.hasInstance, {
             value: function(el) {
@@ -329,6 +431,26 @@ public sealed class ScriptEngine : IDisposable
                 return el != null && typeof el.nodeType === 'number';
             }
         });
+        Object.defineProperty(Document, Symbol.hasInstance, {
+            value: function(el) {
+                return el != null && typeof el.nodeType === 'number' && el.nodeType === 9;
+            }
+        });
+        Object.defineProperty(DocumentFragment, Symbol.hasInstance, {
+            value: function(el) {
+                return el != null && typeof el.nodeType === 'number' && el.nodeType === 11;
+            }
+        });
+        Object.defineProperty(Text, Symbol.hasInstance, {
+            value: function(el) {
+                return el != null && typeof el.nodeType === 'number' && el.nodeType === 3;
+            }
+        });
+        Object.defineProperty(Comment, Symbol.hasInstance, {
+            value: function(el) {
+                return el != null && typeof el.nodeType === 'number' && el.nodeType === 8;
+            }
+        });
     } catch(e) {}
 })();
 ");
@@ -340,7 +462,9 @@ public sealed class ScriptEngine : IDisposable
 
         _documentShim = new DocumentShim(_document, _engine);
         _documentShim.DomMutated += () => DomChanged?.Invoke();
-        _engine.SetValue("document", _documentShim);
+
+        // DocumentShim IS ObjectInstance IS JsValue — assign directly, no ObjectWrapper
+        _engine.SetValue("document", (JsValue)_documentShim);
         _engine.Execute("window.document = document;");
     }
 }

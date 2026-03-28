@@ -1,4 +1,3 @@
-// ─── SPA Router ──────────────────────────────────────────────────────────────
 var currentPage = 'home';
 var pages = ['home', 'about', 'contact'];
 
@@ -16,7 +15,6 @@ function navigate(page) {
     currentPage = page;
 }
 
-// ─── Live counter (ticks every second) ───────────────────────────────────────
 var count = 0;
 function tick() {
     count++;
@@ -25,10 +23,9 @@ function tick() {
 }
 setInterval(tick, 1000);
 
-// ─── C# backend call via window.mio.invoke (the ONLY bridge to C#) ───────────
 window.mio.invoke('getHello')
-    .then(function(data) {
+    .then(function (data) {
         var el = document.getElementById('api-result');
         if (el) el.textContent = data.message + ' (' + data.timestamp + ')';
     })
-    .catch(function(e) { console.error('mio.invoke error', e); });
+    .catch(function (e) { console.error('mio.invoke error', e); });

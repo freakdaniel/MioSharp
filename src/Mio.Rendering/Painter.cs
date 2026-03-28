@@ -23,6 +23,7 @@ public sealed class Painter
 
     public void Paint(SKCanvas canvas, LayoutBox root)
     {
+        canvas.Clear(SKColors.White);
         PaintBox(canvas, root);
     }
 
@@ -30,15 +31,23 @@ public sealed class Painter
     {
         if (box.Style.Display == Display.None) return;
 
+        var needsLayer = box.Style.Opacity < 0.999f;
+        if (needsLayer)
+        {
+            using var layerPaint = new SKPaint { Color = new SKColor(255, 255, 255, (byte)(box.Style.Opacity * 255)) };
+            canvas.SaveLayer(layerPaint);
+        }
+
         var border  = box.BorderRect;
         var content = box.ContentRect;
+        var br = box.Style.BorderRadius;
 
         // Background
         if (box.Style.BackgroundColor.A > 0)
         {
             using var bgPaint = new SKPaint { Color = ToSkia(box.Style.BackgroundColor), IsAntialias = true };
-            if (box.Style.BorderRadius > 0)
-                canvas.DrawRoundRect(ToSkRect(border), box.Style.BorderRadius, box.Style.BorderRadius, bgPaint);
+            if (br.HasRadius)
+                DrawRoundRect(canvas, ToSkRect(border), br, bgPaint);
             else
                 canvas.DrawRect(ToSkRect(border), bgPaint);
         }
@@ -54,8 +63,8 @@ public sealed class Painter
                 IsStroke    = true,
                 StrokeWidth = box.Style.BorderWidth.Top, // simplified: uniform border width
             };
-            if (box.Style.BorderRadius > 0)
-                canvas.DrawRoundRect(ToSkRect(border), box.Style.BorderRadius, box.Style.BorderRadius, borderPaint);
+            if (br.HasRadius)
+                DrawRoundRect(canvas, ToSkRect(border), br, borderPaint);
             else
                 canvas.DrawRect(ToSkRect(border), borderPaint);
         }
@@ -88,9 +97,26 @@ public sealed class Painter
             PaintText(canvas, box);
         }
 
+        // Clip children to rounded corners / overflow:hidden
+        bool hasClip = br.HasRadius || box.Style.Overflow == Overflow.Hidden;
+        if (hasClip)
+        {
+            canvas.Save();
+            if (br.HasRadius)
+                ClipRoundRect(canvas, ToSkRect(border), br);
+            else
+                canvas.ClipRect(ToSkRect(border));
+        }
+
         // Children
         foreach (var child in box.Children)
             PaintBox(canvas, child);
+
+        if (hasClip)
+            canvas.Restore();
+
+        if (needsLayer)
+            canvas.Restore();
     }
 
     private void PaintText(SKCanvas canvas, LayoutBox box)
@@ -169,6 +195,43 @@ public sealed class Painter
         {
             Console.Error.WriteLine($"[SVG] {ex.Message}");
         }
+    }
+
+    /// <summary>Draws a rounded rectangle with per-corner radii.</summary>
+    private static void DrawRoundRect(SKCanvas canvas, SKRect rect, CornerRadii br, SKPaint paint)
+    {
+        if (br.IsUniform)
+        {
+            canvas.DrawRoundRect(rect, br.Uniform, br.Uniform, paint);
+            return;
+        }
+        using var rrect = new SKRoundRect();
+        rrect.SetRectRadii(rect, [
+            new SKPoint(br.TopLeft, br.TopLeft),
+            new SKPoint(br.TopRight, br.TopRight),
+            new SKPoint(br.BottomRight, br.BottomRight),
+            new SKPoint(br.BottomLeft, br.BottomLeft),
+        ]);
+        canvas.DrawRoundRect(rrect, paint);
+    }
+
+    /// <summary>Clips the canvas to a rounded rectangle with per-corner radii.</summary>
+    private static void ClipRoundRect(SKCanvas canvas, SKRect rect, CornerRadii br)
+    {
+        if (br.IsUniform)
+        {
+            using var uniform = new SKRoundRect(rect, br.Uniform, br.Uniform);
+            canvas.ClipRoundRect(uniform, SKClipOperation.Intersect, true);
+            return;
+        }
+        using var rrect = new SKRoundRect();
+        rrect.SetRectRadii(rect, [
+            new SKPoint(br.TopLeft, br.TopLeft),
+            new SKPoint(br.TopRight, br.TopRight),
+            new SKPoint(br.BottomRight, br.BottomRight),
+            new SKPoint(br.BottomLeft, br.BottomLeft),
+        ]);
+        canvas.ClipRoundRect(rrect, SKClipOperation.Intersect, true);
     }
 
     private static SKRect ToSkRect(Rect r) => new(r.Left, r.Top, r.Right, r.Bottom);

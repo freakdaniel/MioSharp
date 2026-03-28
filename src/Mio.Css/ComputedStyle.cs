@@ -18,6 +18,17 @@ public enum BoxSizing { ContentBox, BorderBox }
 /// <summary>A single CSS transition specification parsed from the transition shorthand.</summary>
 public record TransitionSpec(string Property, float Duration, string Easing, float Delay);
 
+/// <summary>Per-corner border radii matching CSS border-radius (TL, TR, BR, BL).</summary>
+public record struct CornerRadii(float TopLeft, float TopRight, float BottomRight, float BottomLeft)
+{
+    public static readonly CornerRadii Zero = new(0, 0, 0, 0);
+    public CornerRadii(float all) : this(all, all, all, all) { }
+    public bool HasRadius => TopLeft > 0 || TopRight > 0 || BottomRight > 0 || BottomLeft > 0;
+    /// <summary>True if all four corners share the same radius.</summary>
+    public bool IsUniform => TopLeft == TopRight && TopRight == BottomRight && BottomRight == BottomLeft;
+    public float Uniform => TopLeft; // only valid when IsUniform
+}
+
 /// <summary>Fully resolved CSS properties for a single element.</summary>
 public sealed class ComputedStyle
 {
@@ -46,7 +57,7 @@ public sealed class ComputedStyle
     public Thickness Padding { get; set; } = Thickness.Zero;
     public Thickness BorderWidth { get; set; } = Thickness.Zero;
     public Color BorderColor { get; set; } = Color.Transparent;
-    public float BorderRadius { get; set; }
+    public CornerRadii BorderRadius { get; set; } = CornerRadii.Zero;
 
     // Background
     public Color BackgroundColor { get; set; } = Color.Transparent;

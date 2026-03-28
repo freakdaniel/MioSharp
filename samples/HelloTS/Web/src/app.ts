@@ -12,7 +12,6 @@ declare const window: Window & {
     mio: MioApi;
 };
 
-// ─── Response types ───────────────────────────────────────────────────────────
 interface ServerTime {
     iso: string;
     local: string;
@@ -24,7 +23,6 @@ interface ComputeResult {
     power: number;
 }
 
-// ─── SPA Router ───────────────────────────────────────────────────────────────
 const pages: string[] = ['home', 'compute'];
 let currentPage: string = 'home';
 
@@ -45,7 +43,6 @@ function navigate(page: string): void {
 // Make navigate global so onclick handlers can call it
 (window as any).navigate = navigate;
 
-// ─── Live clock via mio.invoke ────────────────────────────────────────────────
 function updateClock(): void {
     window.mio.invoke<ServerTime>('getServerTime')
         .then((data: ServerTime) => {
@@ -58,7 +55,6 @@ function updateClock(): void {
 updateClock();
 setInterval(updateClock, 1000);
 
-// ─── Compute demo ─────────────────────────────────────────────────────────────
 function runCompute(): void {
     const aEl = document.getElementById('input-a') as HTMLInputElement | null;
     const bEl = document.getElementById('input-b') as HTMLInputElement | null;

@@ -2,13 +2,8 @@
   <div class="container">
     <!-- Navigation -->
     <nav class="nav">
-      <span
-        v-for="tab in tabs"
-        :key="tab.id"
-        class="nav-item"
-        :class="{ active: currentTab === tab.id }"
-        @click="currentTab = tab.id"
-      >{{ tab.label }}</span>
+      <span v-for="tab in tabs" :key="tab.id" class="nav-item" :class="{ active: currentTab === tab.id }"
+        @click="currentTab = tab.id">{{ tab.label }}</span>
     </nav>
 
     <!-- Home tab -->
@@ -64,21 +59,18 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 
-// ─── Tabs ─────────────────────────────────────────────────────────────────────
 const tabs = [
-  { id: 'home',     label: 'Home' },
+  { id: 'home', label: 'Home' },
   { id: 'reactive', label: 'Reactivity' },
-  { id: 'ping',     label: 'Ping C#' }
+  { id: 'ping', label: 'Ping C#' }
 ]
 const currentTab = ref('home')
 
-// ─── Counter ──────────────────────────────────────────────────────────────────
 const counter = ref(0)
 let intervalId = null
 onMounted(() => { intervalId = setInterval(() => counter.value++, 1000) })
 onUnmounted(() => { if (intervalId) clearInterval(intervalId) })
 
-// ─── Stats from C# ───────────────────────────────────────────────────────────
 const stats = ref(null)
 onMounted(() => {
   window.mio.invoke('getStats')
@@ -86,14 +78,12 @@ onMounted(() => {
     .catch(e => console.error('getStats:', e))
 })
 
-// ─── Reactivity demo ─────────────────────────────────────────────────────────
 const message = ref('MioSharp')
 const reversed = computed(() => message.value.split('').reverse().join(''))
 const items = ref(['Silk.NET', 'SkiaSharp', 'AngleSharp', 'Jint'])
 let itemCount = items.value.length
 const addItem = () => { itemCount++; items.value.push('Item ' + itemCount) }
 
-// ─── Ping ─────────────────────────────────────────────────────────────────────
 const pingResult = ref('')
 const doPing = () => {
   window.mio.invoke('ping')
@@ -112,7 +102,9 @@ const doPing = () => {
   --text: #2c3e50;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 body {
   font-family: sans-serif;
@@ -122,8 +114,17 @@ body {
   color: var(--text);
 }
 
-.container { display: flex; flex-direction: column; gap: 16px; }
-.page      { display: flex; flex-direction: column; gap: 16px; }
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
 
 .card {
   background: var(--surface);
@@ -132,8 +133,14 @@ body {
   padding: 20px;
 }
 
-h1 { color: var(--primary); margin: 0 0 8px 0; }
-p  { margin: 6px 0; }
+h1 {
+  color: var(--primary);
+  margin: 0 0 8px 0;
+}
+
+p {
+  margin: 6px 0;
+}
 
 .nav {
   display: flex;
@@ -151,7 +158,10 @@ p  { margin: 6px 0; }
   padding: 4px 10px;
 }
 
-.nav-item.active { font-weight: bold; text-decoration: underline; }
+.nav-item.active {
+  font-weight: bold;
+  text-decoration: underline;
+}
 
 .counter {
   font-size: 48px;

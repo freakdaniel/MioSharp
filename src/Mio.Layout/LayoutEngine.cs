@@ -61,7 +61,18 @@ public sealed class LayoutEngine
         Mio.Css.StyleEngine.ViewportWidth  = viewport.Width;
         Mio.Css.StyleEngine.ViewportHeight = viewport.Height;
 
-        var root = BuildBox(document.Body ?? document.DocumentElement);
+        // Seed CSS custom properties from :root (:root = <html> in HTML).
+        // Without this, var(--primary) etc. never resolve in body/children.
+        var rootVars = new Dictionary<string, string>();
+        if (document.DocumentElement != null)
+        {
+            var htmlStyle = _style.Compute(document.DocumentElement, null);
+            foreach (var kv in htmlStyle.CssVariables)
+                rootVars[kv.Key] = kv.Value;
+        }
+
+        var rootEl = document.Body ?? document.DocumentElement!;
+        var root = BuildBox(rootEl, rootVars.Count > 0 ? rootVars : null);
         PerformLayout(root, new Rect(0, 0, viewport.Width, viewport.Height));
         return root;
     }
@@ -109,8 +120,11 @@ public sealed class LayoutEngine
         {
             if (child is IText text)
             {
-                var txt = text.Data.Trim();
-                if (!string.IsNullOrEmpty(txt))
+                // Collapse whitespace runs to single space (CSS white-space: normal).
+                // Do NOT Trim() — spaces between inline elements are meaningful:
+                // "The <strong>only</strong> bridge" needs spaces around "only".
+                var txt = System.Text.RegularExpressions.Regex.Replace(text.Data, @"\s+", " ");
+                if (!string.IsNullOrWhiteSpace(txt))
                 {
                     box.Children.Add(new LayoutBox
                     {
@@ -177,6 +191,35 @@ public sealed class LayoutEngine
 
         // Group consecutive inline/text children into line runs
         var inlineRun = new List<LayoutBox>();
+        // Measures the intrinsic (content-based) width of an inline box by summing its children.
+        // Without this, <strong>/<em>/<a> would get the full container width, pushing siblings off-screen.
+        float MeasureInlineBoxWidth(LayoutBox inl)
+        {
+            if (inl.IsTextBox)
+                return MeasureTextWidth(inl.TextContent!, inl.Style);
+            float total = 0;
+            foreach (var child in inl.Children)
+                total += MeasureInlineBoxWidth(child);
+            return inl.Style.Width ?? (total > 0 ? total : 0);
+        }
+
+        void PositionInlineDescendants(LayoutBox inl)
+        {
+            // Recursively assign ContentRect to children of an already-positioned inline box.
+            // Without this, <strong>/<em>/<a> children stay at ContentRect(0,0) and render at top of screen.
+            if (inl.IsTextBox || inl.Children.Count == 0) return;
+            float cx = inl.ContentRect.X;
+            float cy = inl.ContentRect.Y;
+            float h  = inl.ContentRect.Height;
+            foreach (var child in inl.Children)
+            {
+                float w = MeasureInlineBoxWidth(child);
+                child.ContentRect = new Rect(cx, cy, w, h);
+                PositionInlineDescendants(child);
+                cx += w;
+            }
+        }
+
         void FlushInlineRun()
         {
             if (inlineRun.Count == 0) return;
@@ -184,11 +227,10 @@ public sealed class LayoutEngine
             float curX = x;
             foreach (var inl in inlineRun)
             {
-                float naturalW = inl.IsTextBox
-                    ? MeasureTextWidth(inl.TextContent!, inl.Style)
-                    : (inl.Style.Width ?? innerW);
+                float naturalW = MeasureInlineBoxWidth(inl);
                 float inlW = innerW < 99_000f ? Math.Min(naturalW, innerW) : naturalW;
                 inl.ContentRect = new Rect(curX, cursorY, inlW, lineH);
+                PositionInlineDescendants(inl);
                 curX += inlW;
             }
             cursorY += lineH;

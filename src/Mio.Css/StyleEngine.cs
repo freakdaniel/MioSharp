@@ -15,6 +15,8 @@ public sealed class StyleEngine
 {
     // Parsed stylesheet rules: (specificity, selector, declarations)
     private readonly List<(int specificity, ISelector selector, ICssStyleDeclaration declarations)> _rules = [];
+    // Supplementary rules for CSS custom properties (--*) and var() values that AngleSharp drops
+    private readonly List<(int specificity, string selectorText, Dictionary<string, string> declarations)> _varRules = [];
     private static readonly CssParser _cssParser = new();
 
     // Viewport dimensions — updated by LayoutEngine before each layout pass
@@ -39,10 +41,44 @@ public sealed class StyleEngine
         {
             Console.Error.WriteLine($"[CSS] Parse error: {ex.Message}");
         }
+
+        // Supplementary: parse raw CSS for custom properties and var() values that AngleSharp drops
+        ParseRawCssForVars(css);
+    }
+
+    private void ParseRawCssForVars(string css)
+    {
+        // Strip CSS comments
+        css = Regex.Replace(css, @"/\*.*?\*/", "", RegexOptions.Singleline);
+
+        var rulePattern = new Regex(@"([^{}]+)\{([^{}]+)\}", RegexOptions.Singleline);
+        foreach (Match m in rulePattern.Matches(css))
+        {
+            var selectorText = m.Groups[1].Value.Trim();
+            var declBlock = m.Groups[2].Value;
+
+            var decls = new Dictionary<string, string>();
+            foreach (var d in declBlock.Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var colon = d.IndexOf(':');
+                if (colon < 0) continue;
+                var prop = d[..colon].Trim();
+                var val = d[(colon + 1)..].Trim();
+                if (string.IsNullOrEmpty(prop) || string.IsNullOrEmpty(val)) continue;
+
+                // Only store custom properties or values containing var()
+                if (prop.StartsWith("--") || val.Contains("var("))
+                    decls[prop.ToLowerInvariant()] = val;
+            }
+
+            if (decls.Count > 0)
+                _varRules.Add((ComputeSpecificity(selectorText), selectorText, decls));
+        }
+        _varRules.Sort((a, b) => a.specificity.CompareTo(b.specificity));
     }
 
     /// <summary>Clears all loaded stylesheet rules (call before loading a new document).</summary>
-    public void ClearStylesheets() => _rules.Clear();
+    public void ClearStylesheets() { _rules.Clear(); _varRules.Clear(); }
 
     /// <summary>Computes the final style for an element, walking its ancestor chain.</summary>
     /// <param name="inheritedVars">CSS custom properties inherited from the parent element.</param>
@@ -65,6 +101,18 @@ public sealed class StyleEngine
             {
                 if (selector.Match(element))
                     ApplyCssDeclarations(declarations, style);
+            }
+            catch { /* ignore selector match errors */ }
+        }
+
+        // 2b. Supplementary rules for custom properties and var() values (AngleSharp drops these)
+        foreach (var (_, selectorText, declarations) in _varRules)
+        {
+            try
+            {
+                if (element.Matches(selectorText))
+                    foreach (var kv in declarations)
+                        ApplyProperty(kv.Key, kv.Value, style);
             }
             catch { /* ignore selector match errors */ }
         }
@@ -291,14 +339,17 @@ public sealed class StyleEngine
             case "border-left-style":
                 break;
 
-            case "border-radius": s.BorderRadius = ParseLength(value) ?? 0; break;
-            // Individual corner radii — map all to our uniform BorderRadius
-            case "border-top-left-radius":
-            case "border-top-right-radius":
-            case "border-bottom-right-radius":
-            case "border-bottom-left-radius":
-                { var r = ParseLength(value); if (r.HasValue && s.BorderRadius == 0) s.BorderRadius = r.Value; }
+            case "border-radius":
+                s.BorderRadius = ParseBorderRadiusShorthand(value);
                 break;
+            case "border-top-left-radius":
+                s.BorderRadius = s.BorderRadius with { TopLeft = ParseLength(value) ?? 0 }; break;
+            case "border-top-right-radius":
+                s.BorderRadius = s.BorderRadius with { TopRight = ParseLength(value) ?? 0 }; break;
+            case "border-bottom-right-radius":
+                s.BorderRadius = s.BorderRadius with { BottomRight = ParseLength(value) ?? 0 }; break;
+            case "border-bottom-left-radius":
+                s.BorderRadius = s.BorderRadius with { BottomLeft = ParseLength(value) ?? 0 }; break;
 
             case "border":
                 ParseBorderShorthand(value, s);
@@ -367,6 +418,8 @@ public sealed class StyleEngine
             case "border-collapse":
             case "border-spacing":
             case "font":
+                ParseFontShorthand(value, s);
+                break;
             case "text-transform":
             case "text-overflow":
             case "text-indent":
@@ -422,6 +475,33 @@ public sealed class StyleEngine
         }
     }
 
+    private static void ParseFontShorthand(string v, ComputedStyle s)
+    {
+        // Handles: [style] [weight] size[/line-height] family
+        // e.g. "bold 14px sans-serif", "italic bold 16px/1.2 monospace", "14px Arial"
+        var tokens = v.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var t in tokens)
+        {
+            if (t is "bold" or "700" or "800" or "900") { s.FontWeight = FontWeight.Bold; continue; }
+            if (t is "normal" or "400") { s.FontWeight = FontWeight.Normal; continue; }
+            if (t == "italic") { s.FontStyle = FontStyle.Italic; continue; }
+            if (t.Contains('/'))
+            {
+                var parts = t.Split('/');
+                var sz = ParseLength(parts[0]);
+                if (sz.HasValue) s.FontSize = sz.Value;
+                if (parts.Length > 1) { var lh = ParseLength(parts[1]); if (lh.HasValue) s.LineHeight = lh.Value; }
+                continue;
+            }
+            var len = ParseLength(t);
+            if (len.HasValue) { s.FontSize = len.Value; continue; }
+            // Remaining token treated as font-family (skip keywords)
+            if (t is not "normal" and not "small-caps" and not "oblique" and not "inherit" and not "initial"
+                    and not "unset" and not "revert")
+                s.FontFamily = t.Trim('"', '\'').Trim(',');
+        }
+    }
+
     private static readonly System.Globalization.CultureInfo InvCulture = System.Globalization.CultureInfo.InvariantCulture;
     private static readonly System.Globalization.NumberStyles FloatStyle = System.Globalization.NumberStyles.Float;
 
@@ -430,6 +510,9 @@ public sealed class StyleEngine
         v = v.Trim().ToLowerInvariant();
         if (v == "0") return 0f;
         if (v.StartsWith("calc(")) return null; // calc() stub — not supported, return null (use default)
+        // Handle multi-value strings (e.g. "4px 4px" from border-radius corner properties) — take first value
+        if (v.Contains(' ') && !v.Contains('('))
+            v = v.Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
         if (v.EndsWith("px") && float.TryParse(v[..^2], FloatStyle, InvCulture, out var px)) return px;
         if (v.EndsWith("em") && float.TryParse(v[..^2], FloatStyle, InvCulture, out var em)) return em * 16;
         if (v.EndsWith("rem") && float.TryParse(v[..^3], FloatStyle, InvCulture, out var rem)) return rem * 16;
@@ -493,6 +576,27 @@ public sealed class StyleEngine
             3 => new Thickness(ParseLength(parts[0]) ?? 0, ParseLength(parts[1]) ?? 0, ParseLength(parts[2]) ?? 0, ParseLength(parts[1]) ?? 0),
             4 => new Thickness(ParseLength(parts[0]) ?? 0, ParseLength(parts[1]) ?? 0, ParseLength(parts[2]) ?? 0, ParseLength(parts[3]) ?? 0),
             _ => Thickness.Zero,
+        };
+    }
+
+    private static CornerRadii ParseBorderRadiusShorthand(string v)
+    {
+        // Handles: "8px", "8px 4px", "8px 4px 2px", "8px 4px 2px 1px"
+        // Also handles "8px / 4px" (asymmetric) — we take the horizontal radii only
+        var parts = v.Split('/')[0].Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return parts.Length switch
+        {
+            1 => new CornerRadii(ParseLength(parts[0]) ?? 0),
+            2 => new CornerRadii(
+                ParseLength(parts[0]) ?? 0, ParseLength(parts[1]) ?? 0,
+                ParseLength(parts[0]) ?? 0, ParseLength(parts[1]) ?? 0),
+            3 => new CornerRadii(
+                ParseLength(parts[0]) ?? 0, ParseLength(parts[1]) ?? 0,
+                ParseLength(parts[2]) ?? 0, ParseLength(parts[1]) ?? 0),
+            4 => new CornerRadii(
+                ParseLength(parts[0]) ?? 0, ParseLength(parts[1]) ?? 0,
+                ParseLength(parts[2]) ?? 0, ParseLength(parts[3]) ?? 0),
+            _ => CornerRadii.Zero,
         };
     }
 

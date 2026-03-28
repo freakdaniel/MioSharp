@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react'
 
-// ─── Styles (inline for IIFE compatibility) ───────────────────────────────────
 const styles = {
   body: {
     fontFamily: 'sans-serif',
@@ -46,13 +45,12 @@ const styles = {
   page: { display: 'flex', flexDirection: 'column', gap: 16 },
 }
 
-// ─── App component ─────────────────────────────────────────────────────────────
 export default function App() {
-  const [tab, setTab]         = useState('home')
+  const [tab, setTab] = useState('home')
   const [counter, setCounter] = useState(0)
   const [appInfo, setAppInfo] = useState(null)
-  const [clock, setClock]     = useState('--:--:--')
-  const [todos, setTodos]     = useState(['Learn MioSharp', 'Build a desktop app', 'Ship it 🚀'])
+  const [clock, setClock] = useState('--:--:--')
+  const [todos, setTodos] = useState(['Learn MioSharp', 'Build a desktop app', 'Ship it 🚀'])
 
   // Counter
   useEffect(() => {
@@ -72,7 +70,7 @@ export default function App() {
     const updateClock = () => {
       window.mio.invoke('getClock')
         .then(data => setClock(data.time))
-        .catch(() => {})
+        .catch(() => { })
     }
     updateClock()
     const id = setInterval(updateClock, 1000)
@@ -80,9 +78,9 @@ export default function App() {
   }, [])
 
   const tabs = [
-    { id: 'home',  label: 'Home' },
+    { id: 'home', label: 'Home' },
     { id: 'hooks', label: 'Hooks' },
-    { id: 'info',  label: 'App Info' },
+    { id: 'info', label: 'App Info' },
   ]
 
   return (
